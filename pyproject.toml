@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "j-axon-automation-collector"
+version = "0.1.0"
+description = "Technical foundation for the J-AXON Agent and Discovery Executor"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = []
+classifiers = ["Private :: Do Not Upload"]
+
+[project.scripts]
+jaxon-agent = "jaxon_agent.__main__:main"
+jaxon-discovery-executor = "jaxon_discovery_executor.__main__:main"
+
+[dependency-groups]
+dev = [
+    "hatchling==1.32.4",
+    "pip-audit==2.10.1",
+    "pytest==9.1.1",
+    "ruff==0.16.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jaxon_agent", "src/jaxon_discovery_executor"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "SIM", "UP"]
+
+[tool.uv]
+required-version = "==0.12.24"

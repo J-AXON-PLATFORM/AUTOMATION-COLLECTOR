@@ -1,0 +1,38 @@
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Test and coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Local tools and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local configuration and secrets
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+secrets.*
+
+# Operating system files
+.DS_Store
+Thumbs.db
