@@ -61,6 +61,9 @@ jobs:
       - name: Test
         run: uv run pytest
 
+      - name: Verify vendored Agent contracts
+        run: uv run python scripts/sync_agent_contracts.py verify
+
       - name: Build
         run: uv build
 
