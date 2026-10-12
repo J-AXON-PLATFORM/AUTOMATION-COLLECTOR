@@ -11,6 +11,7 @@ Son programas diferentes. No comparten entrypoint, identidad SSH ni configuracio
 
 - Python `3.14.8`.
 - uv `0.12.24`.
+- Sistema POSIX con ownership y modos de archivo Unix; este corte no garantiza ACL de Windows.
 
 El proyecto exige esas versiones mediante `.python-version`, `requires-python` y `tool.uv.required-version`.
 
@@ -21,7 +22,7 @@ uv python install 3.14.8
 uv sync --locked
 ```
 
-Las dependencias runtime `jsonschema` y `referencing` validan localmente los contratos Agent. Ruff, pytest y pip-audit son herramientas de desarrollo fijadas exactamente en `pyproject.toml` y bloqueadas en `uv.lock`.
+Las dependencias runtime `jsonschema` y `referencing` validan localmente los contratos Agent. `cryptography` genera y valida el keypair Ed25519 local sin depender de un cliente SFTP. Ruff, pytest y pip-audit son herramientas de desarrollo fijadas exactamente en `pyproject.toml` y bloqueadas en `uv.lock`.
 
 ## Entry points
 
@@ -36,6 +37,18 @@ Tambien pueden comprobarse como modulos:
 uv run python -m jaxon_agent
 uv run python -m jaxon_discovery_executor
 ```
+
+## Inicializacion local del Agent
+
+Tras pre-registrar un Agent desde la aplicacion web, su identidad local se crea sin conectividad:
+
+```bash
+uv run jaxon-agent initialize \
+  --agent-id 8b90cfac-9304-4a11-9422-7c834431f920 \
+  --state-dir /ruta/privada/jaxon-agent
+```
+
+El comando exige un UUIDv4 y un directorio privado `0700`, crea archivos `0600`, nunca sobrescribe una identidad y devuelve JSON con el `agentId`, la ruta publica, la huella SHA-256 y la clave publica OpenSSH copiable. La clave privada permanece en el directorio local y nunca se imprime ni se envia por red.
 
 ## Validacion
 
@@ -64,6 +77,6 @@ El validador `jaxon_agent.contracts` resuelve todos los `$ref` offline. Valida b
 
 ## Limites actuales
 
-Esta fundacion identifica ambos programas e incorpora exclusivamente contratos y validacion Agent. Todavia no implementa SFTP, Paramiko, snapshots reales, polling, spool, tareas reales, recopilacion del sistema, discovery de red, enrolamiento, claves SSH, servicios del sistema operativo ni packaging con PyInstaller.
+El Agent incorpora inicializacion local Ed25519, pero todavia no implementa SFTP, Paramiko, snapshots reales, polling, spool, tareas reales, recopilacion del sistema, discovery de red, activacion, servicios del sistema operativo ni packaging con PyInstaller.
 
 Cuando se incorporen identidades SSH, el Agent y el Discovery Executor deberan usar claves y buzones independientes.

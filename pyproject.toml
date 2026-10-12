@@ -9,10 +9,11 @@ description = "Technical foundation for the J-AXON Agent and Discovery Executor"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "cryptography==50.0.2",
     "jsonschema==4.26.0",
     "referencing==0.37.0",
 ]
-classifiers = ["Private :: Do Not Upload"]
+classifiers = ["Private :: Do Not Upload", "Operating System :: POSIX"]
 
 [project.scripts]
 jaxon-agent = "jaxon_agent.__main__:main"
