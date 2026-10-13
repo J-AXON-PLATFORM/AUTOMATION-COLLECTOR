@@ -8,6 +8,12 @@ from collections.abc import Sequence
 
 from jaxon_agent import PROGRAM_NAME, __version__
 from jaxon_agent.identity import IdentityInitializationError, initialize_identity
+from jaxon_agent.sftp import (
+    SftpConfigurationError,
+    SftpVerificationError,
+    configure_sftp,
+    verify_sftp,
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -22,11 +28,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     initialize = commands.add_parser("initialize", help="Create or inspect local Agent identity")
     initialize.add_argument("--agent-id", required=True)
     initialize.add_argument("--state-dir", required=True)
+    configure = commands.add_parser("configure-sftp", help="Store trusted SFTP connection data")
+    configure.add_argument("--state-dir", required=True)
+    configure.add_argument("--host", required=True)
+    configure.add_argument("--port", required=True, type=int)
+    configure.add_argument("--username", required=True)
+    configure.add_argument("--host-key", required=True)
+    verify = commands.add_parser("verify-sftp", help="Verify the configured SFTP connection")
+    verify.add_argument("--state-dir", required=True)
     parsed = parser.parse_args(arguments)
 
     try:
-        result = initialize_identity(parsed.agent_id, parsed.state_dir)
-    except IdentityInitializationError as exception:
+        if parsed.command == "initialize":
+            result = initialize_identity(parsed.agent_id, parsed.state_dir)
+        elif parsed.command == "configure-sftp":
+            result = configure_sftp(
+                parsed.state_dir, parsed.host, parsed.port, parsed.username, parsed.host_key
+            )
+        else:
+            result = verify_sftp(parsed.state_dir)
+    except (
+        IdentityInitializationError,
+        SftpConfigurationError,
+        SftpVerificationError,
+    ) as exception:
         print(str(exception), file=sys.stderr)
         return 2
     print(result.to_json())

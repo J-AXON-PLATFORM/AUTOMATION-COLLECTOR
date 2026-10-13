@@ -22,7 +22,7 @@ uv python install 3.14.8
 uv sync --locked
 ```
 
-Las dependencias runtime `jsonschema` y `referencing` validan localmente los contratos Agent. `cryptography` genera y valida el keypair Ed25519 local sin depender de un cliente SFTP. Ruff, pytest y pip-audit son herramientas de desarrollo fijadas exactamente en `pyproject.toml` y bloqueadas en `uv.lock`.
+Las dependencias runtime `jsonschema` y `referencing` validan localmente los contratos Agent. `cryptography` genera y valida el keypair Ed25519 y Paramiko 5.0.0 verifica la conexion SFTP con la host key fijada. Ruff, pytest y pip-audit son herramientas de desarrollo fijadas exactamente en `pyproject.toml` y bloqueadas en `uv.lock`.
 
 ## Entry points
 
@@ -49,6 +49,22 @@ uv run jaxon-agent initialize \
 ```
 
 El comando exige un UUIDv4 y un directorio privado `0700`, crea archivos `0600`, nunca sobrescribe una identidad y devuelve JSON con el `agentId`, la ruta publica, la huella SHA-256 y la clave publica OpenSSH copiable. La clave privada permanece en el directorio local y nunca se imprime ni se envia por red.
+
+## Configuracion y verificacion SFTP
+
+Tras activar el Agent desde la aplicacion web, almacene los cuatro datos de conexion devueltos por el backend y verifique el acceso:
+
+```bash
+uv run jaxon-agent configure-sftp \
+  --state-dir /ruta/privada/jaxon-agent \
+  --host 127.0.0.1 \
+  --port 2022 \
+  --username agent-8b90cfac-9304-4a11-9422-7c834431f920 \
+  --host-key 'ssh-ed25519 AAAA...'
+uv run jaxon-agent verify-sftp --state-dir /ruta/privada/jaxon-agent
+```
+
+La configuracion es idempotente y no sustituye silenciosamente valores. La verificacion acepta solo la host key Ed25519 fijada y la private key de esa identidad, deshabilita SSH Agent y busqueda de claves externas, y abre realmente el subsistema SFTP con timeouts `10/10/60` segundos.
 
 ## Validacion
 
@@ -77,6 +93,6 @@ El validador `jaxon_agent.contracts` resuelve todos los `$ref` offline. Valida b
 
 ## Limites actuales
 
-El Agent incorpora inicializacion local Ed25519, pero todavia no implementa SFTP, Paramiko, snapshots reales, polling, spool, tareas reales, recopilacion del sistema, discovery de red, activacion, servicios del sistema operativo ni packaging con PyInstaller.
+El Agent incorpora inicializacion local Ed25519 y verificacion puntual de conexion SFTP, pero todavia no implementa snapshots reales, transferencias, polling, spool, tareas reales, recopilacion del sistema, discovery de red, revocacion, rotacion, servicios del sistema operativo ni packaging con PyInstaller.
 
-Cuando se incorporen identidades SSH, el Agent y el Discovery Executor deberan usar claves y buzones independientes.
+El Discovery Executor continua sin identidad o conexion SFTP funcional y debera usar una clave y un buzon independientes del Agent.
