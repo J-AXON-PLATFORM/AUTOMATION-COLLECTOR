@@ -22,6 +22,7 @@ PRIVATE_KEY_NAME = "id_ed25519"
 PUBLIC_KEY_NAME = "id_ed25519.pub"
 METADATA_NAME = "agent.json"
 EXPECTED_FILES = {PRIVATE_KEY_NAME, PUBLIC_KEY_NAME, METADATA_NAME}
+OPTIONAL_FILES = {"sftp.json"}
 
 
 class IdentityInitializationError(RuntimeError):
@@ -69,7 +70,9 @@ def initialize_identity(agent_id_value: str, state_dir_value: str) -> Initializa
             _validate_directory(directory_details)
             files = set(os.listdir(directory_descriptor))
             if files:
-                if files != EXPECTED_FILES:
+                if not EXPECTED_FILES.issubset(files) or not files.issubset(
+                    EXPECTED_FILES | OPTIONAL_FILES
+                ):
                     raise IdentityInitializationError("Agent state is incomplete or incompatible.")
                 result = _load_existing(agent_id, state_dir, directory_descriptor)
             else:
@@ -86,6 +89,52 @@ def initialize_identity(agent_id_value: str, state_dir_value: str) -> Initializa
                 state_dir.rmdir()
         raise IdentityInitializationError(
             "Agent identity could not be initialized safely."
+        ) from exception
+
+
+def inspect_identity(state_dir_value: str) -> InitializationResult:
+    """Load and validate a complete existing identity without changing it."""
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+        raise IdentityInitializationError(
+            "Agent identity inspection requires POSIX no-follow support."
+        )
+    state_dir = Path(state_dir_value).expanduser().absolute()
+    try:
+        details = state_dir.lstat()
+        if not stat.S_ISDIR(details.st_mode):
+            raise IdentityInitializationError("State directory must be a private directory.")
+        descriptor = os.open(state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            return _inspect_identity_descriptor(state_dir, descriptor)
+        finally:
+            os.close(descriptor)
+    except IdentityInitializationError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exception:
+        raise IdentityInitializationError(
+            "Agent state is incomplete or incompatible."
+        ) from exception
+
+
+def _inspect_identity_descriptor(state_dir: Path, descriptor: int) -> InitializationResult:
+    try:
+        directory_details = os.fstat(descriptor)
+        _validate_directory(directory_details)
+        files = set(os.listdir(descriptor))
+        if not EXPECTED_FILES.issubset(files) or not files.issubset(
+            EXPECTED_FILES | OPTIONAL_FILES
+        ):
+            raise IdentityInitializationError("Agent state is incomplete or incompatible.")
+        metadata = json.loads(_read_private_file(descriptor, METADATA_NAME))
+        agent_id = _uuid_v4(metadata["agentId"])
+        result = _load_existing(agent_id, state_dir, descriptor)
+        _verify_directory_identity(state_dir, directory_details)
+        return result
+    except IdentityInitializationError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exception:
+        raise IdentityInitializationError(
+            "Agent state is incomplete or incompatible."
         ) from exception
 
 
