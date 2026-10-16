@@ -14,6 +14,7 @@ from jaxon_agent.sftp import (
     configure_sftp,
     verify_sftp,
 )
+from jaxon_agent.snapshot import SnapshotError, send_snapshot
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -36,6 +37,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure.add_argument("--host-key", required=True)
     verify = commands.add_parser("verify-sftp", help="Verify the configured SFTP connection")
     verify.add_argument("--state-dir", required=True)
+    snapshot = commands.add_parser("send-snapshot", help="Collect and send one technical snapshot")
+    snapshot.add_argument("--state-dir", required=True)
     parsed = parser.parse_args(arguments)
 
     try:
@@ -45,12 +48,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = configure_sftp(
                 parsed.state_dir, parsed.host, parsed.port, parsed.username, parsed.host_key
             )
-        else:
+        elif parsed.command == "verify-sftp":
             result = verify_sftp(parsed.state_dir)
+        else:
+            result = send_snapshot(parsed.state_dir)
     except (
         IdentityInitializationError,
         SftpConfigurationError,
         SftpVerificationError,
+        SnapshotError,
     ) as exception:
         print(str(exception), file=sys.stderr)
         return 2

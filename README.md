@@ -66,6 +66,16 @@ uv run jaxon-agent verify-sftp --state-dir /ruta/privada/jaxon-agent
 
 La configuracion es idempotente y no sustituye silenciosamente valores. La verificacion acepta solo la host key Ed25519 fijada y la private key de esa identidad, deshabilita SSH Agent y busqueda de claves externas, y abre realmente el subsistema SFTP con timeouts `10/10/60` segundos.
 
+## Snapshot tecnico puntual
+
+Un Agent inicializado, configurado y activado puede recoger, validar y transferir un unico snapshot minimo:
+
+```bash
+uv run jaxon-agent send-snapshot --state-dir /ruta/privada/jaxon-agent
+```
+
+El comando funciona solo en POSIX/Linux. Obtiene el `agentId` de la identidad local, recoge exclusivamente hostname, sistema operativo, arquitectura, CPU logica, memoria y volumen raiz, y valida offline los bytes JSON contra Agent 1.0 antes de conectar. La transferencia usa la private key local exacta y la host key fijada, crea un archivo `/snapshots/{messageId}.json.part` de forma exclusiva y finaliza con rename a `.json` en el mismo directorio. No persiste el payload localmente, no imprime datos tecnicos ni claves y no implementa polling, retries, spool, tareas o procesamiento Collector.
+
 ## Validacion
 
 ```bash
@@ -93,6 +103,6 @@ El validador `jaxon_agent.contracts` resuelve todos los `$ref` offline. Valida b
 
 ## Limites actuales
 
-El Agent incorpora inicializacion local Ed25519 y verificacion puntual de conexion SFTP, pero todavia no implementa snapshots reales, transferencias, polling, spool, tareas reales, recopilacion del sistema, discovery de red, revocacion, rotacion, servicios del sistema operativo ni packaging con PyInstaller.
+El Agent incorpora inicializacion local Ed25519, verificacion puntual de conexion SFTP y un snapshot tecnico puntual. Todavia no implementa polling, retries, spool, tareas reales, procesamiento Collector, discovery de red, revocacion, rotacion, servicios del sistema operativo ni packaging con PyInstaller.
 
 El Discovery Executor continua sin identidad o conexion SFTP funcional y debera usar una clave y un buzon independientes del Agent.
