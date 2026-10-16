@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import paramiko
 from jaxon_agent.identity import (
     PRIVATE_KEY_NAME,
     IdentityInitializationError,
+    InitializationResult,
     _inspect_identity_descriptor,
     _read_private_file,
     _validate_directory,
@@ -59,6 +61,14 @@ class SftpVerificationResult:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"), sort_keys=True)
+
+
+@dataclass(frozen=True)
+class LoadedSftpState:
+    identity: InitializationResult
+    config: dict[str, object]
+    privateKey: paramiko.Ed25519Key
+    hostKey: paramiko.PKey
 
 
 def configure_sftp(
@@ -119,6 +129,21 @@ def verify_sftp(
     state_dir_value: str,
     client_factory=paramiko.SSHClient,
 ) -> SftpVerificationResult:
+    state = load_sftp_state(state_dir_value)
+    with open_sftp_session(state, client_factory):
+        pass
+    return SftpVerificationResult(
+        state.identity.agentId,
+        state.config["host"],
+        state.config["hostKeyFingerprint"],
+        state.config["port"],
+        state.identity.publicKeyFingerprint,
+        "verified",
+        state.config["username"],
+    )
+
+
+def load_sftp_state(state_dir_value: str) -> LoadedSftpState:
     state_dir = Path(state_dir_value).expanduser().absolute()
     descriptor, details = _open_state(state_dir)
     try:
@@ -151,17 +176,23 @@ def verify_sftp(
             "SFTP configuration or Agent identity is not valid."
         ) from exception
 
+    return LoadedSftpState(identity, config, private_key, parsed_host_key)
+
+
+@contextmanager
+def open_sftp_session(state: LoadedSftpState, client_factory=paramiko.SSHClient):
     client = client_factory()
     sftp_client = None
+    config = state.config
     lookup_name = config["host"] if config["port"] == 22 else f"[{config['host']}]:{config['port']}"
     try:
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
-        client.get_host_keys().add(lookup_name, parsed_host_key.get_name(), parsed_host_key)
+        client.get_host_keys().add(lookup_name, state.hostKey.get_name(), state.hostKey)
         client.connect(
             hostname=config["host"],
             port=config["port"],
             username=config["username"],
-            pkey=private_key,
+            pkey=state.privateKey,
             allow_agent=False,
             look_for_keys=False,
             timeout=10,
@@ -170,6 +201,8 @@ def verify_sftp(
             channel_timeout=60,
         )
         sftp_client = client.open_sftp()
+        sftp_client.get_channel().settimeout(60)
+        yield sftp_client
     except (TimeoutError, OSError, paramiko.SSHException) as exception:
         raise SftpVerificationError(
             "SFTP connection could not be verified securely."
@@ -178,15 +211,6 @@ def verify_sftp(
         if sftp_client is not None:
             sftp_client.close()
         client.close()
-    return SftpVerificationResult(
-        identity.agentId,
-        config["host"],
-        config["hostKeyFingerprint"],
-        config["port"],
-        identity.publicKeyFingerprint,
-        "verified",
-        config["username"],
-    )
 
 
 def _open_state(path: Path) -> tuple[int, os.stat_result]:

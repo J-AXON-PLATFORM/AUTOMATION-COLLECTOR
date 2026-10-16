@@ -61,6 +61,13 @@ def test_verifies_with_only_pinned_host_and_exact_identity_key(tmp_path) -> None
     calls = {}
 
     class Sftp:
+        class Channel:
+            def settimeout(self, value):
+                calls["operation_timeout"] = value
+
+        def get_channel(self):
+            return self.Channel()
+
         def close(self):
             calls["sftp_closed"] = True
 
@@ -101,6 +108,7 @@ def test_verifies_with_only_pinned_host_and_exact_identity_key(tmp_path) -> None
     assert connection["banner_timeout"] == 10
     assert connection["auth_timeout"] == 10
     assert connection["channel_timeout"] == 60
+    assert calls["operation_timeout"] == 60
     assert "password" not in connection and "key_filename" not in connection
     assert calls["opened"] and calls["sftp_closed"] and calls["client_closed"]
     assert "PRIVATE KEY" not in result.to_json()
