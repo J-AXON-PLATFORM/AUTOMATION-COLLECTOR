@@ -8,6 +8,7 @@ from collections.abc import Sequence
 
 from jaxon_agent import PROGRAM_NAME, __version__
 from jaxon_agent.identity import IdentityInitializationError, initialize_identity
+from jaxon_agent.runner import AgentRunnerError, run_agent
 from jaxon_agent.sftp import (
     SftpConfigurationError,
     SftpVerificationError,
@@ -39,6 +40,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     verify.add_argument("--state-dir", required=True)
     snapshot = commands.add_parser("send-snapshot", help="Collect and send one technical snapshot")
     snapshot.add_argument("--state-dir", required=True)
+    run = commands.add_parser("run", help="Run the foreground Agent task poller")
+    run.add_argument("--state-dir", required=True)
+    run.add_argument("--once", action="store_true")
     parsed = parser.parse_args(arguments)
 
     try:
@@ -50,10 +54,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif parsed.command == "verify-sftp":
             result = verify_sftp(parsed.state_dir)
+        elif parsed.command == "run":
+            result = run_agent(parsed.state_dir, once=parsed.once)
         else:
             result = send_snapshot(parsed.state_dir)
     except (
         IdentityInitializationError,
+        AgentRunnerError,
         SftpConfigurationError,
         SftpVerificationError,
         SnapshotError,

@@ -8,6 +8,7 @@ import pytest
 import jaxon_agent
 import jaxon_agent.__main__ as agent_main
 from jaxon_agent.__main__ import main
+from jaxon_agent.runner import AgentRunResult
 from jaxon_agent.snapshot import SnapshotSendResult
 
 
@@ -85,3 +86,28 @@ def test_agent_send_snapshot_command_exposes_only_safe_metadata(monkeypatch, cap
     assert "ssh-ed25519" not in captured.out
     assert "hostname" not in captured.out
     assert captured.err == ""
+
+
+def test_agent_run_once_command_exposes_only_safe_metadata(monkeypatch, capsys) -> None:
+    result = AgentRunResult(
+        agentId="0c504dfb-15d6-431d-b1f4-f64354a44b21",
+        cycles=1,
+        status="STOPPED",
+    )
+    called = []
+    monkeypatch.setattr(
+        agent_main,
+        "run_agent",
+        lambda state_dir, *, once: called.append((state_dir, once)) or result,
+    )
+
+    assert main(["run", "--state-dir", "/private/state", "--once"]) == 0
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "agentId": result.agentId,
+        "cycles": 1,
+        "status": "STOPPED",
+    }
+    assert called == [("/private/state", True)]
+    assert "/private/state" not in captured.out
