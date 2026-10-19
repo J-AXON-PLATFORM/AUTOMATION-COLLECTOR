@@ -22,6 +22,7 @@ from jaxon_agent.contracts import MAX_TASK_BYTES, AgentContractValidator, Contra
 from jaxon_agent.ledger import AgentRunLock, LedgerError, LedgerRecord, TaskLedger
 from jaxon_agent.sftp import (
     SftpVerificationError,
+    TransientSftpError,
     load_sftp_state,
     open_sftp_session,
 )
@@ -34,6 +35,9 @@ POLL_SECONDS = 60
 POLL_JITTER_SECONDS = 15
 STARTUP_JITTER_SECONDS = 60
 CAPABILITY_TIMEOUT_SECONDS = 5 * 60
+RESULT_DELIVERY_ATTEMPTS = 5
+RESULT_RETRY_BASE_SECONDS = 5
+RESULT_RETRY_CAP_SECONDS = 5 * 60
 
 
 class AgentRunnerError(RuntimeError):
@@ -97,6 +101,8 @@ def run_agent(
                     state,
                     client_factory,
                     clock,
+                    sleeper,
+                    random_source,
                 )
                 _poll_cycle(
                     state_dir_value,
@@ -107,6 +113,8 @@ def run_agent(
                     uuid_factory,
                     clock,
                     executor,
+                    sleeper,
+                    random_source,
                 )
                 ledger.prune(clock())
                 cycles += 1
@@ -136,6 +144,8 @@ def _poll_cycle(
     uuid_factory,
     clock,
     snapshot_executor,
+    sleeper,
+    random_source,
 ) -> PollCycleResult:
     candidates: list[tuple[str, bytes]] = []
     with open_sftp_session(state, client_factory) as sftp:
@@ -171,6 +181,8 @@ def _poll_cycle(
             uuid_factory,
             clock,
             snapshot_executor,
+            sleeper,
+            random_source,
         )
     return PollCycleResult(len(candidates))
 
@@ -186,6 +198,8 @@ def _handle_task(
     uuid_factory,
     clock,
     snapshot_executor,
+    sleeper,
+    random_source,
 ) -> None:
     validator = validator_factory()
     try:
@@ -244,7 +258,7 @@ def _handle_task(
         message,
     )
     record = ledger.terminal(record, result, completed_at)
-    _transfer_result(ledger, record, state, client_factory, clock)
+    _transfer_result(ledger, record, state, client_factory, clock, sleeper, random_source)
 
 
 def _recover_interrupted(ledger, agent_id, validator_factory, clock) -> None:
@@ -265,13 +279,38 @@ def _recover_interrupted(ledger, agent_id, validator_factory, clock) -> None:
         ledger.terminal(record, document, completed_at)
 
 
-def _retry_terminal_results(ledger, state, client_factory, clock) -> None:
+def _retry_terminal_results(ledger, state, client_factory, clock, sleeper, random_source) -> None:
     for record in ledger.records():
         if record.state == "TERMINAL":
-            _transfer_result(ledger, record, state, client_factory, clock)
+            _transfer_result(
+                ledger,
+                record,
+                state,
+                client_factory,
+                clock,
+                sleeper,
+                random_source,
+            )
 
 
-def _transfer_result(ledger, record, state, client_factory, clock) -> None:
+def _transfer_result(ledger, record, state, client_factory, clock, sleeper, random_source) -> None:
+    for attempt in range(1, RESULT_DELIVERY_ATTEMPTS + 1):
+        try:
+            _transfer_result_once(ledger, record, state, client_factory, clock)
+            return
+        except TransientSftpError as exception:
+            if attempt == RESULT_DELIVERY_ATTEMPTS:
+                raise AgentRunnerError(
+                    "Agent result delivery exhausted its transient retry limit."
+                ) from exception
+            sleeper(_result_retry_delay(attempt, random_source))
+        except AgentRunnerError:
+            raise
+        except Exception as exception:
+            raise AgentRunnerError("Agent result delivery failed permanently.") from exception
+
+
+def _transfer_result_once(ledger, record, state, client_factory, clock) -> None:
     if record.resultDocument is None or record.resultMessageId is None:
         raise LedgerError("Terminal Agent result is incomplete.")
     temporary = f"{RESPONSE_DIRECTORY}/{record.resultMessageId}.json.part"
@@ -303,6 +342,14 @@ def _transfer_result(ledger, record, state, client_factory, clock) -> None:
                     sftp.remove(temporary)
             raise
     ledger.transferred(record, _timestamp(clock()))
+
+
+def _result_retry_delay(failed_attempt: int, random_source) -> float:
+    maximum = min(
+        RESULT_RETRY_CAP_SECONDS,
+        RESULT_RETRY_BASE_SECONDS * (2 ** (failed_attempt - 1)),
+    )
+    return random_source.uniform(0, maximum)
 
 
 class CapabilityTimeoutError(RuntimeError):

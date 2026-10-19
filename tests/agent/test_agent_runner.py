@@ -14,7 +14,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from jaxon_agent.identity import initialize_identity
 from jaxon_agent.ledger import AgentRunLock, LedgerError, TaskLedger
-from jaxon_agent.runner import AgentRunnerError, CapabilityTimeoutError, run_agent
+from jaxon_agent.runner import (
+    AgentRunnerError,
+    CapabilityTimeoutError,
+    _result_retry_delay,
+    run_agent,
+)
 from jaxon_agent.sftp import configure_sftp
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
@@ -63,9 +68,9 @@ class RemoteFile:
         return self.mailbox.files[self.path][:maximum]
 
     def write(self, content):
-        if self.mailbox.fail_next_write:
-            self.mailbox.fail_next_write = False
-            raise OSError("temporary transfer failure")
+        self.mailbox.result_documents_attempted.append(content)
+        if self.mailbox.write_failures:
+            raise self.mailbox.write_failures.pop(0)
         self.mailbox.files[self.path] += content
 
 
@@ -73,7 +78,11 @@ class Mailbox:
     def __init__(self):
         self.directories = {"/tasks", "/responses", "/snapshots"}
         self.files = {}
-        self.fail_next_write = False
+        self.connect_attempts = 0
+        self.connect_failures = []
+        self.removed = []
+        self.result_documents_attempted = []
+        self.write_failures = []
 
     def stat(self, path):
         if path in self.directories:
@@ -103,6 +112,7 @@ class Mailbox:
         self.files[target] = self.files.pop(source)
 
     def remove(self, path):
+        self.removed.append(path)
         del self.files[path]
 
     def get_channel(self):
@@ -124,7 +134,11 @@ class Client:
         return self.keys
 
     def connect(self, **_kwargs):
-        pass
+        self.mailbox.connect_attempts += 1
+        if self.mailbox.connect_failures:
+            failure = self.mailbox.connect_failures.pop(0)
+            if failure is not None:
+                raise failure
 
     def open_sftp(self):
         return self.mailbox
@@ -156,6 +170,15 @@ def task_document(identity, *, task_type="COLLECT_SNAPSHOT", expires_at=None):
 class NoJitter:
     def uniform(self, _minimum, _maximum):
         return 0
+
+
+class MaximumJitter:
+    def __init__(self):
+        self.ranges = []
+
+    def uniform(self, minimum, maximum):
+        self.ranges.append((minimum, maximum))
+        return maximum
 
 
 def run_once(state_dir, mailbox, **overrides):
@@ -210,20 +233,111 @@ def test_executes_collect_snapshot_once_and_keeps_deterministic_result(tmp_path)
     assert stat.S_IMODE(records[0].stat().st_mode) == 0o600
 
 
-def test_retries_persisted_result_without_reexecuting_after_transfer_failure(tmp_path) -> None:
+def test_succeeds_on_first_delivery_attempt_without_waiting(tmp_path) -> None:
     state_dir, identity = configured_state(tmp_path)
     mailbox = Mailbox()
     task_id, document = task_document(identity)
     mailbox.files[f"/tasks/{task_id}.json"] = document
-    mailbox.fail_next_write = True
+    waits = []
+
+    run_once(
+        state_dir,
+        mailbox,
+        sleeper=waits.append,
+        snapshot_executor=lambda *_args: None,
+    )
+
+    assert mailbox.connect_attempts == 2  # one poll session and one Result delivery session
+    assert waits == []
+
+
+def test_retries_transient_delivery_with_full_jitter_without_reexecution(tmp_path) -> None:
+    state_dir, identity = configured_state(tmp_path)
+    mailbox = Mailbox()
+    task_id, document = task_document(identity)
+    mailbox.files[f"/tasks/{task_id}.json"] = document
+    mailbox.write_failures = [
+        ConnectionResetError(errno.ECONNRESET, "connection reset"),
+        TimeoutError("operation timed out"),
+        EOFError("established transport closed"),
+        ConnectionAbortedError(errno.ECONNABORTED, "channel closed"),
+    ]
+    executions = []
+    waits = []
+    jitter = MaximumJitter()
+
+    run_once(
+        state_dir,
+        mailbox,
+        sleeper=waits.append,
+        random_source=jitter,
+        snapshot_executor=lambda *_args: executions.append("executed"),
+    )
+
+    assert executions == ["executed"]
+    assert waits == [5, 10, 20, 40]
+    assert jitter.ranges == [(0, 5), (0, 10), (0, 20), (0, 40)]
+    assert len(mailbox.result_documents_attempted) == 5
+    assert len(set(mailbox.result_documents_attempted)) == 1
+    assert next(iter(result_documents(mailbox).values()))["status"] == "SUCCEEDED"
+
+
+def test_retry_delay_applies_five_minute_cap() -> None:
+    jitter = MaximumJitter()
+
+    assert _result_retry_delay(10, jitter) == 300
+    assert jitter.ranges == [(0, 300)]
+
+
+def test_exhausts_five_transient_attempts_and_keeps_terminal_result(tmp_path) -> None:
+    state_dir, identity = configured_state(tmp_path)
+    mailbox = Mailbox()
+    task_id, document = task_document(identity)
+    mailbox.files[f"/tasks/{task_id}.json"] = document
+    mailbox.connect_failures = [None] + [
+        ConnectionRefusedError(errno.ECONNREFUSED, "refused") for _ in range(5)
+    ]
+    executions = []
+    waits = []
+
+    with pytest.raises(AgentRunnerError, match="exhausted its transient retry limit"):
+        run_once(
+            state_dir,
+            mailbox,
+            sleeper=waits.append,
+            snapshot_executor=lambda *_args: executions.append("executed"),
+        )
+
+    with TaskLedger(str(state_dir)) as ledger:
+        record = ledger.get(task_id)
+    assert executions == ["executed"]
+    assert mailbox.connect_attempts == 6  # poll plus five Result attempts
+    assert waits == [0, 0, 0, 0]
+    assert record is not None and record.state == "TERMINAL"
+    assert record.resultDocument is not None
+
+
+def test_manual_restart_delivers_pending_result_without_reexecution(tmp_path) -> None:
+    state_dir, identity = configured_state(tmp_path)
+    mailbox = Mailbox()
+    task_id, document = task_document(identity)
+    mailbox.files[f"/tasks/{task_id}.json"] = document
+    mailbox.connect_failures = [None] + [TimeoutError("temporary") for _ in range(5)]
     executions = []
 
-    with pytest.raises(AgentRunnerError, match="safe local or SFTP failure"):
+    with pytest.raises(AgentRunnerError, match="exhausted"):
         run_once(
             state_dir,
             mailbox,
             snapshot_executor=lambda *_args: executions.append("executed"),
         )
+
+    with TaskLedger(str(state_dir)) as ledger:
+        pending = ledger.get(task_id)
+    assert pending is not None
+    own_partial = f"/responses/{pending.resultMessageId}.json.part"
+    mailbox.files[own_partial] = b"stale"
+    mailbox.files["/responses/unrelated.json.part"] = b"keep"
 
     run_once(
         state_dir,
@@ -231,8 +345,148 @@ def test_retries_persisted_result_without_reexecuting_after_transfer_failure(tmp
         snapshot_executor=lambda *_args: pytest.fail("task must not execute twice"),
     )
 
+    delivered = next(iter(result_documents(mailbox).values()))
     assert executions == ["executed"]
-    assert next(iter(result_documents(mailbox).values()))["status"] == "SUCCEEDED"
+    delivered_bytes = next(iter(mailbox.files[path] for path in result_documents(mailbox)))
+    assert pending.resultDocument == delivered_bytes
+    assert delivered["messageId"] == pending.resultMessageId
+    assert delivered["resultId"] == pending.resultId
+    assert delivered["taskId"] == pending.taskId
+    assert own_partial in mailbox.removed
+    assert mailbox.files["/responses/unrelated.json.part"] == b"keep"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        paramiko.AuthenticationException("secret-password"),
+        paramiko.BadHostKeyException("sftp.example", host_key(), host_key()),
+        paramiko.SSHException("unclassified-secret-detail"),
+    ],
+)
+def test_permanent_or_unclassified_connection_failure_is_not_retried_and_is_safe(
+    tmp_path, failure
+) -> None:
+    state_dir, identity = configured_state(tmp_path)
+    mailbox = Mailbox()
+    task_id, document = task_document(identity)
+    mailbox.files[f"/tasks/{task_id}.json"] = document
+    mailbox.connect_failures = [None, failure]
+    waits = []
+
+    with pytest.raises(AgentRunnerError) as raised:
+        run_once(
+            state_dir,
+            mailbox,
+            sleeper=waits.append,
+            snapshot_executor=lambda *_args: None,
+        )
+
+    assert mailbox.connect_attempts == 2  # poll plus one Result attempt
+    assert waits == []
+    assert "secret" not in str(raised.value)
+
+
+def test_conflicting_final_result_is_permanent_and_not_retried(tmp_path) -> None:
+    state_dir, identity = configured_state(tmp_path)
+    mailbox = Mailbox()
+    task_id, document = task_document(identity)
+    mailbox.files[f"/tasks/{task_id}.json"] = document
+
+    with TaskLedger(str(state_dir)) as ledger:
+        record = ledger.begin(task_id, "COLLECT_SNAPSHOT", document, str(uuid4()), str(uuid4()))
+        record = ledger.terminal(record, b"expected", "2026-10-18T12:00:00.000Z")
+    mailbox.files[f"/responses/{record.resultMessageId}.json"] = b"conflicting"
+    waits = []
+
+    with pytest.raises(AgentRunnerError, match="conflicting content"):
+        run_once(state_dir, mailbox, sleeper=waits.append)
+
+    assert mailbox.connect_attempts == 1
+    assert waits == []
+
+
+def test_permission_failure_during_result_write_is_not_retried(tmp_path) -> None:
+    state_dir, identity = configured_state(tmp_path)
+    mailbox = Mailbox()
+    task_id, document = task_document(identity)
+    mailbox.files[f"/tasks/{task_id}.json"] = document
+    mailbox.write_failures = [PermissionError(errno.EACCES, "sensitive remote path")]
+    waits = []
+
+    with pytest.raises(AgentRunnerError) as raised:
+        run_once(
+            state_dir,
+            mailbox,
+            sleeper=waits.append,
+            snapshot_executor=lambda *_args: None,
+        )
+
+    assert len(mailbox.result_documents_attempted) == 1
+    assert waits == []
+    assert "sensitive" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("unknown-secret-detail"), paramiko.SSHException("unknown-secret-detail")],
+)
+def test_unknown_result_delivery_error_fails_closed_without_leaking_details(
+    tmp_path, failure
+) -> None:
+    state_dir, identity = configured_state(tmp_path)
+    mailbox = Mailbox()
+    task_id, document = task_document(identity)
+    mailbox.files[f"/tasks/{task_id}.json"] = document
+    mailbox.write_failures = [failure]
+    waits = []
+
+    with pytest.raises(AgentRunnerError, match="failed permanently") as raised:
+        run_once(
+            state_dir,
+            mailbox,
+            sleeper=waits.append,
+            snapshot_executor=lambda *_args: None,
+        )
+
+    assert len(mailbox.result_documents_attempted) == 1
+    assert waits == []
+    assert "secret" not in str(raised.value)
+
+
+def test_identical_remote_final_completes_pending_result_idempotently(tmp_path) -> None:
+    state_dir, _ = configured_state(tmp_path)
+    mailbox = Mailbox()
+    task_id = str(uuid4())
+    message_id = str(uuid4())
+    document = b"identical-result"
+    with TaskLedger(str(state_dir)) as ledger:
+        record = ledger.begin(task_id, "COLLECT_SNAPSHOT", b"task", message_id, str(uuid4()))
+        ledger.terminal(record, document, "2026-10-18T12:00:00.000Z")
+    mailbox.files[f"/responses/{message_id}.json"] = document
+
+    run_once(state_dir, mailbox)
+
+    with TaskLedger(str(state_dir)) as ledger:
+        delivered = ledger.get(task_id)
+    assert delivered is not None and delivered.state == "TRANSFERRED"
+    assert mailbox.result_documents_attempted == []
+
+
+def test_transient_failure_cleans_only_own_partial_before_retry(tmp_path) -> None:
+    state_dir, identity = configured_state(tmp_path)
+    mailbox = Mailbox()
+    task_id, document = task_document(identity)
+    mailbox.files[f"/tasks/{task_id}.json"] = document
+    mailbox.files["/responses/unrelated.json.part"] = b"keep"
+    mailbox.write_failures = [ConnectionResetError(errno.ECONNRESET, "reset")]
+
+    run_once(state_dir, mailbox, snapshot_executor=lambda *_args: None)
+
+    own_partials = [path for path in mailbox.removed if path != "/responses/unrelated.json.part"]
+    assert len(own_partials) == 1
+    assert own_partials[0].endswith(".json.part")
+    assert mailbox.files["/responses/unrelated.json.part"] == b"keep"
 
 
 def test_recovers_running_record_as_failed_without_reexecution(tmp_path) -> None:
