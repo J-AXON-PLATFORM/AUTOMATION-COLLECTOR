@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import io
 import json
 import os
+import socket
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,6 +35,10 @@ class SftpConfigurationError(RuntimeError):
 
 class SftpVerificationError(RuntimeError):
     """A safe SFTP verification failure."""
+
+
+class TransientSftpError(SftpVerificationError):
+    """A classified transient SFTP transport failure."""
 
 
 @dataclass(frozen=True)
@@ -203,7 +209,9 @@ def open_sftp_session(state: LoadedSftpState, client_factory=paramiko.SSHClient)
         sftp_client = client.open_sftp()
         sftp_client.get_channel().settimeout(60)
         yield sftp_client
-    except (TimeoutError, OSError, paramiko.SSHException) as exception:
+    except (EOFError, TimeoutError, OSError, paramiko.SSHException) as exception:
+        if _is_transient_sftp_failure(exception):
+            raise TransientSftpError("SFTP transport is temporarily unavailable.") from exception
         raise SftpVerificationError(
             "SFTP connection could not be verified securely."
         ) from exception
@@ -211,6 +219,38 @@ def open_sftp_session(state: LoadedSftpState, client_factory=paramiko.SSHClient)
         if sftp_client is not None:
             sftp_client.close()
         client.close()
+
+
+def _is_transient_sftp_failure(exception: BaseException) -> bool:
+    permanent = (
+        paramiko.AuthenticationException,
+        paramiko.BadHostKeyException,
+        paramiko.ChannelException,
+        paramiko.IncompatiblePeer,
+        paramiko.PasswordRequiredException,
+    )
+    if isinstance(exception, permanent):
+        return False
+    if isinstance(exception, paramiko.ssh_exception.NoValidConnectionsError):
+        failures = tuple(exception.errors.values())
+        return bool(failures) and all(_is_transient_sftp_failure(failure) for failure in failures)
+    if isinstance(exception, TimeoutError | EOFError):
+        return True
+    if isinstance(exception, socket.gaierror):
+        return exception.errno == socket.EAI_AGAIN
+    if isinstance(exception, OSError):
+        return exception.errno in {
+            errno.ECONNABORTED,
+            errno.ECONNREFUSED,
+            errno.ECONNRESET,
+            errno.EHOSTUNREACH,
+            errno.ENETDOWN,
+            errno.ENETRESET,
+            errno.ENETUNREACH,
+            errno.EPIPE,
+            errno.ETIMEDOUT,
+        }
+    return False
 
 
 def _open_state(path: Path) -> tuple[int, os.stat_result]:
