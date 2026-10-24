@@ -66,6 +66,18 @@ uv run jaxon-agent verify-sftp --state-dir /ruta/privada/jaxon-agent
 
 La configuracion es idempotente y no sustituye silenciosamente valores. La verificacion acepta solo la host key Ed25519 fijada y la private key de esa identidad, deshabilita SSH Agent y busqueda de claves externas, y abre realmente el subsistema SFTP con timeouts `10/10/60` segundos.
 
+## Inicializacion local del Discovery Executor
+
+Tras pre-registrar un Discovery Executor desde la aplicacion web, su identidad local independiente se crea sin conectividad:
+
+```bash
+uv run jaxon-discovery-executor initialize \
+  --executor-id 8b90cfac-9304-4a11-9422-7c834431f920 \
+  --state-dir /ruta/privada/jaxon-discovery-executor
+```
+
+El comando exige un UUIDv4 y un directorio exclusivo del executor. Crea `executor_ed25519`, `executor_ed25519.pub` y `executor.json` con controles POSIX cerrados, devuelve solo material publico y nunca reutiliza ni acepta el estado del Agent. Este corte no configura red, SFTP, polling, jobs, escaneo o daemon.
+
 ## Snapshot tecnico puntual
 
 Un Agent inicializado, configurado y activado puede recoger, validar y transferir un unico snapshot minimo:
@@ -105,4 +117,4 @@ El validador `jaxon_agent.contracts` resuelve todos los `$ref` offline. Valida b
 
 El Agent incorpora inicializacion local Ed25519, verificacion puntual de conexion SFTP y un snapshot tecnico puntual. Todavia no implementa polling, retries, spool, tareas reales, procesamiento Collector, discovery de red, revocacion, rotacion, servicios del sistema operativo ni packaging con PyInstaller.
 
-El Discovery Executor continua sin identidad o conexion SFTP funcional y debera usar una clave y un buzon independientes del Agent.
+El Discovery Executor incorpora solo identidad Ed25519 local. Continua sin conexion SFTP, buzon, polling, jobs, escaneo, daemon o packaging PyInstaller.
