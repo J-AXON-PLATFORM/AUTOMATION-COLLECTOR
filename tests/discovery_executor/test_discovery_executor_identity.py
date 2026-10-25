@@ -59,6 +59,23 @@ def test_is_idempotent_without_rewriting_files(tmp_path) -> None:
     } == before
 
 
+def test_accepts_only_the_optional_sftp_configuration(tmp_path) -> None:
+    state_dir = tmp_path / "executor-state"
+    executor_id = str(uuid4())
+    identity = initialize_identity(executor_id, str(state_dir))
+    config = state_dir / "sftp.json"
+    config.write_text("{}")
+    os.chmod(config, 0o600)
+
+    assert initialize_identity(executor_id, str(state_dir)) == identity
+
+    unexpected = state_dir / "unexpected"
+    unexpected.write_text("unexpected")
+    os.chmod(unexpected, 0o600)
+    with pytest.raises(ExecutorIdentityInitializationError, match="incomplete or incompatible"):
+        initialize_identity(executor_id, str(state_dir))
+
+
 @pytest.mark.parametrize("executor_id", [str(uuid1()), "not-a-uuid"])
 def test_rejects_non_v4_ids_without_creating_state(tmp_path, executor_id) -> None:
     state_dir = tmp_path / "executor-state"

@@ -22,6 +22,7 @@ PRIVATE_KEY_NAME = "executor_ed25519"
 PUBLIC_KEY_NAME = "executor_ed25519.pub"
 METADATA_NAME = "executor.json"
 EXPECTED_FILES = {PRIVATE_KEY_NAME, PUBLIC_KEY_NAME, METADATA_NAME}
+OPTIONAL_FILES = {"sftp.json"}
 
 
 class ExecutorIdentityInitializationError(RuntimeError):
@@ -71,7 +72,10 @@ def initialize_identity(
             directory_details = os.fstat(descriptor)
             _validate_directory(directory_details)
             files = set(os.listdir(descriptor))
-            if files and files != EXPECTED_FILES:
+            if files and (
+                not EXPECTED_FILES.issubset(files)
+                or not files.issubset(EXPECTED_FILES | OPTIONAL_FILES)
+            ):
                 raise ExecutorIdentityInitializationError(
                     "Discovery Executor state is incomplete or incompatible."
                 )
@@ -194,6 +198,30 @@ def _load_existing(
     )
 
 
+def _inspect_identity_descriptor(state_dir: Path, descriptor: int) -> ExecutorInitializationResult:
+    files = set(os.listdir(descriptor))
+    if not EXPECTED_FILES.issubset(files) or not files.issubset(EXPECTED_FILES | OPTIONAL_FILES):
+        raise ExecutorIdentityInitializationError(
+            "Discovery Executor state is incomplete or incompatible."
+        )
+    try:
+        metadata = json.loads(_read_private_file(descriptor, METADATA_NAME).decode("utf-8"))
+        executor_id = _uuid_v4(metadata["executorId"])
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        TypeError,
+        KeyError,
+        json.JSONDecodeError,
+        ExecutorIdentityInitializationError,
+    ) as exception:
+        raise ExecutorIdentityInitializationError(
+            "Discovery Executor state is incomplete or incompatible."
+        ) from exception
+    return _load_existing(executor_id, state_dir, descriptor)
+
+
 def _uuid_v4(value: str) -> UUID:
     try:
         parsed = UUID(value)
@@ -214,7 +242,7 @@ def _validate_directory(details: os.stat_result) -> None:
 
 
 def _read_private_file(descriptor: int, name: str) -> bytes:
-    file_descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor)
+    file_descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
     try:
         details = os.fstat(file_descriptor)
         if not stat.S_ISREG(details.st_mode):
