@@ -11,6 +11,12 @@ from jaxon_discovery_executor.identity import (
     ExecutorIdentityInitializationError,
     initialize_identity,
 )
+from jaxon_discovery_executor.sftp import (
+    ExecutorSftpConfigurationError,
+    ExecutorSftpVerificationError,
+    configure_sftp,
+    verify_sftp,
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -27,11 +33,38 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     initialize.add_argument("--executor-id", required=True)
     initialize.add_argument("--state-dir", required=True)
+    configure = commands.add_parser(
+        "configure-sftp", help="Store pinned Discovery Executor SFTP connection data"
+    )
+    configure.add_argument("--state-dir", required=True)
+    configure.add_argument("--host", required=True)
+    configure.add_argument("--port", required=True, type=int)
+    configure.add_argument("--username", required=True)
+    configure.add_argument("--host-key", required=True)
+    verify = commands.add_parser(
+        "verify-sftp", help="Verify the pinned Discovery Executor SFTP connection"
+    )
+    verify.add_argument("--state-dir", required=True)
     parsed = parser.parse_args(arguments)
 
     try:
-        result = initialize_identity(parsed.executor_id, parsed.state_dir)
-    except ExecutorIdentityInitializationError as exception:
+        if parsed.command == "initialize":
+            result = initialize_identity(parsed.executor_id, parsed.state_dir)
+        elif parsed.command == "configure-sftp":
+            result = configure_sftp(
+                parsed.state_dir,
+                parsed.host,
+                parsed.port,
+                parsed.username,
+                parsed.host_key,
+            )
+        else:
+            result = verify_sftp(parsed.state_dir)
+    except (
+        ExecutorIdentityInitializationError,
+        ExecutorSftpConfigurationError,
+        ExecutorSftpVerificationError,
+    ) as exception:
         print(str(exception), file=sys.stderr)
         return 2
     print(result.to_json())

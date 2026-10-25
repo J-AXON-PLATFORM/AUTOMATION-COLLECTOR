@@ -76,7 +76,22 @@ uv run jaxon-discovery-executor initialize \
   --state-dir /ruta/privada/jaxon-discovery-executor
 ```
 
-El comando exige un UUIDv4 y un directorio exclusivo del executor. Crea `executor_ed25519`, `executor_ed25519.pub` y `executor.json` con controles POSIX cerrados, devuelve solo material publico y nunca reutiliza ni acepta el estado del Agent. Este corte no configura red, SFTP, polling, jobs, escaneo o daemon.
+El comando exige un UUIDv4 y un directorio exclusivo del executor. Crea `executor_ed25519`, `executor_ed25519.pub` y `executor.json` con controles POSIX cerrados, devuelve solo material publico y nunca reutiliza ni acepta el estado del Agent.
+
+Tras activar el Discovery Executor, configure y verifique una vez su canal SFTP dedicado:
+
+```bash
+uv run jaxon-discovery-executor configure-sftp \
+  --state-dir /ruta/privada/jaxon-discovery-executor \
+  --host 127.0.0.1 \
+  --port 2022 \
+  --username discovery-executor-8b90cfac-9304-4a11-9422-7c834431f920 \
+  --host-key 'ssh-ed25519 AAAA...'
+uv run jaxon-discovery-executor verify-sftp \
+  --state-dir /ruta/privada/jaxon-discovery-executor
+```
+
+La configuracion privada es idempotente y queda ligada al `executorId`. La verificacion realiza un unico intento con la private key local exacta y la host key Ed25519 fijada, sin SSH Agent ni busqueda de claves externas. No implementa polling, jobs, resultados, escaneo, retries o daemon.
 
 ## Snapshot tecnico puntual
 
@@ -117,4 +132,4 @@ El validador `jaxon_agent.contracts` resuelve todos los `$ref` offline. Valida b
 
 El Agent incorpora inicializacion local Ed25519, verificacion puntual de conexion SFTP y un snapshot tecnico puntual. Todavia no implementa polling, retries, spool, tareas reales, procesamiento Collector, discovery de red, revocacion, rotacion, servicios del sistema operativo ni packaging con PyInstaller.
 
-El Discovery Executor incorpora solo identidad Ed25519 local. Continua sin conexion SFTP, buzon, polling, jobs, escaneo, daemon o packaging PyInstaller.
+El Discovery Executor incorpora identidad Ed25519 local y configuracion/verificacion puntual de su conexion SFTP dedicada. Continua sin polling, jobs, resultados, escaneo, retries, daemon o packaging PyInstaller.
