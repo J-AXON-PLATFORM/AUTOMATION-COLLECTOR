@@ -22,7 +22,7 @@ uv python install 3.14.8
 uv sync --locked
 ```
 
-Las dependencias runtime `jsonschema` y `referencing` validan localmente los contratos Agent. `cryptography` genera y valida el keypair Ed25519 y Paramiko 5.0.0 verifica la conexion SFTP con la host key fijada. Ruff, pytest y pip-audit son herramientas de desarrollo fijadas exactamente en `pyproject.toml` y bloqueadas en `uv.lock`.
+Las dependencias runtime `jsonschema` y `referencing` validan localmente los contratos Agent y Discovery Job. `cryptography` genera y valida el keypair Ed25519 y Paramiko 5.0.0 verifica la conexion SFTP con la host key fijada. Ruff, pytest y pip-audit son herramientas de desarrollo fijadas exactamente en `pyproject.toml` y bloqueadas en `uv.lock`.
 
 ## Entry points
 
@@ -91,7 +91,7 @@ uv run jaxon-discovery-executor verify-sftp \
   --state-dir /ruta/privada/jaxon-discovery-executor
 ```
 
-La configuracion privada es idempotente y queda ligada al `executorId`. La verificacion realiza un unico intento con la private key local exacta y la host key Ed25519 fijada, sin SSH Agent ni busqueda de claves externas. No implementa polling, jobs, resultados, escaneo, retries o daemon.
+La configuracion privada es idempotente y queda ligada al `executorId`. La verificacion realiza un unico intento con la private key local exacta y la host key Ed25519 fijada, sin SSH Agent ni busqueda de claves externas. No implementa polling, ejecucion de jobs, resultados, escaneo, retries o daemon.
 
 ## Snapshot tecnico puntual
 
@@ -114,6 +114,7 @@ uv run pytest
 uv build
 uv run pip-audit
 uv run python scripts/sync_agent_contracts.py verify
+uv run python scripts/sync_discovery_contracts.py verify
 ```
 
 ## Contratos Agent
@@ -128,8 +129,18 @@ uv run python scripts/sync_agent_contracts.py verify
 
 El validador `jaxon_agent.contracts` resuelve todos los `$ref` offline. Valida bytes y tamaño antes de parsear, acepta únicamente la versión `1.0` y separa mensajes emitidos por Agent de tareas recibidas. No registra el payload cuando informa un error.
 
+## Contrato Discovery Job
+
+`contracts/discovery/1.0/` es una copia byte a byte de `BACKEND/doc/contracts/discovery/1.0/`. `jaxon_discovery_executor.contracts.DiscoveryJobContractValidator` valida offline jobs `BASIC` cerrados, UUIDv4, CIDR canónico, UTC, expiración creciente y el límite de 64 KiB.
+
+```bash
+uv run python scripts/sync_discovery_contracts.py sync --source ../backend/doc/contracts/discovery/1.0
+uv run python scripts/sync_discovery_contracts.py check --source ../backend/doc/contracts/discovery/1.0
+uv run python scripts/sync_discovery_contracts.py verify
+```
+
 ## Limites actuales
 
 El Agent incorpora inicializacion local Ed25519, verificacion puntual de conexion SFTP y un snapshot tecnico puntual. Todavia no implementa polling, retries, spool, tareas reales, procesamiento Collector, discovery de red, revocacion, rotacion, servicios del sistema operativo ni packaging con PyInstaller.
 
-El Discovery Executor incorpora identidad Ed25519 local y configuracion/verificacion puntual de su conexion SFTP dedicada. Continua sin polling, jobs, resultados, escaneo, retries, daemon o packaging PyInstaller.
+El Discovery Executor incorpora identidad Ed25519 local, configuracion/verificacion puntual SFTP y validacion offline del contrato Discovery Job 1.0. Continua sin polling, ejecucion, resultados, escaneo, retries, daemon o packaging PyInstaller.
