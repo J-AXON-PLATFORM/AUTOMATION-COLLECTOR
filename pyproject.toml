@@ -33,6 +33,7 @@ packages = ["src/jaxon_agent", "src/jaxon_discovery_executor"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/agent" = "jaxon_agent/contracts/agent"
+"contracts/discovery" = "jaxon_discovery_executor/contracts/discovery"
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
