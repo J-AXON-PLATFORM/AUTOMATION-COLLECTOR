@@ -22,7 +22,7 @@ PRIVATE_KEY_NAME = "executor_ed25519"
 PUBLIC_KEY_NAME = "executor_ed25519.pub"
 METADATA_NAME = "executor.json"
 EXPECTED_FILES = {PRIVATE_KEY_NAME, PUBLIC_KEY_NAME, METADATA_NAME}
-OPTIONAL_FILES = {"sftp.json"}
+OPTIONAL_FILES = {"sftp.json", "run.lock", "discovery-ledger"}
 
 
 class ExecutorIdentityInitializationError(RuntimeError):

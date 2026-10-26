@@ -13,6 +13,7 @@ from jaxon_discovery_executor.identity import (
     ExecutorIdentityInitializationError,
     initialize_identity,
 )
+from jaxon_discovery_executor.ledger import DiscoveryLedger, DiscoveryRunLock
 
 
 def test_generates_separate_private_identity_and_safe_output(tmp_path) -> None:
@@ -74,6 +75,18 @@ def test_accepts_only_the_optional_sftp_configuration(tmp_path) -> None:
     os.chmod(unexpected, 0o600)
     with pytest.raises(ExecutorIdentityInitializationError, match="incomplete or incompatible"):
         initialize_identity(executor_id, str(state_dir))
+
+
+def test_accepts_private_runner_state_only(tmp_path) -> None:
+    state_dir = tmp_path / "executor-state"
+    executor_id = str(uuid4())
+    identity = initialize_identity(executor_id, str(state_dir))
+    with DiscoveryRunLock(str(state_dir)), DiscoveryLedger(str(state_dir)):
+        pass
+
+    assert initialize_identity(executor_id, str(state_dir)) == identity
+    assert stat.S_IMODE((state_dir / "run.lock").stat().st_mode) == 0o600
+    assert stat.S_IMODE((state_dir / "discovery-ledger").stat().st_mode) == 0o700
 
 
 @pytest.mark.parametrize("executor_id", [str(uuid1()), "not-a-uuid"])

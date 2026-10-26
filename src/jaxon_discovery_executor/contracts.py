@@ -1,4 +1,4 @@
-"""Offline validation for J-AXON Discovery Job messages."""
+"""Offline validation for J-AXON Discovery Job and Result messages."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from referencing.exceptions import NoSuchResource
 SCHEMA_BASE = "https://schemas.j-axon.invalid/discovery/1.0/"
 SUPPORTED_VERSION = "1.0"
 MAX_JOB_BYTES = 64 * 1024
+MAX_RESULT_BYTES = 5 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,7 @@ class UnsupportedDiscoveryMessageType(DiscoveryContractError):
 class DiscoveryContractValidationError(DiscoveryContractError):
     def __init__(self, issues: tuple[ContractIssue, ...]) -> None:
         self.issues = issues
-        super().__init__(f"Discovery Job failed contract validation ({len(issues)} issue(s))")
+        super().__init__(f"Discovery message failed contract validation ({len(issues)} issue(s))")
 
 
 def _is_uuid_v4(value: object) -> bool:
@@ -177,3 +178,125 @@ class DiscoveryJobContractValidator:
         elif isinstance(node, list):
             for value in node:
                 cls._reject_unsafe_references(value)
+
+
+class DiscoveryResultContractValidator:
+    def __init__(self, contract_root: Path | None = None) -> None:
+        root = (contract_root or _default_contract_root()).resolve() / SUPPORTED_VERSION
+        schemas: dict[str, dict[str, Any]] = {}
+        for filename in ("common.schema.json", "result.schema.json"):
+            schema = json.loads((root / filename).read_text(encoding="utf-8"))
+            schema_id = schema.get("$id")
+            if schema_id != SCHEMA_BASE + filename:
+                raise DiscoveryContractError("Discovery schema identity is not approved")
+            DiscoveryJobContractValidator._reject_unsafe_references(schema)
+            schemas[schema_id] = schema
+        registry = Registry(retrieve=self._reject_remote_resource).with_resources(
+            (schema_id, Resource.from_contents(schema)) for schema_id, schema in schemas.items()
+        )
+        self._validator = Draft202012Validator(
+            schemas[SCHEMA_BASE + "result.schema.json"],
+            registry=registry,
+            format_checker=_format_checker(),
+        )
+
+    def validate_before_emit(self, document: bytes, scope_cidr: str) -> dict[str, Any]:
+        if not isinstance(document, bytes):
+            raise TypeError("Discovery contract validation requires bytes")
+        if len(document) > MAX_RESULT_BYTES:
+            raise DiscoveryContractSizeError("Discovery Result exceeds the maximum supported size")
+        try:
+            instance = json.loads(document.decode("utf-8"), object_pairs_hook=_closed_object)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            raise DiscoveryContractEncodingError(
+                "Discovery Result is not valid UTF-8 JSON"
+            ) from error
+        if not isinstance(instance, dict):
+            raise DiscoveryContractValidationError((ContractIssue(path="/", keyword="type"),))
+        if instance.get("schemaVersion") != SUPPORTED_VERSION:
+            raise UnsupportedDiscoveryContractVersion("Discovery contract version is not supported")
+        if instance.get("messageType") != "DISCOVERY_RESULT":
+            raise UnsupportedDiscoveryMessageType(
+                "Discovery message type is not allowed at this boundary"
+            )
+        errors = sorted(
+            self._validator.iter_errors(instance),
+            key=lambda error: (list(error.absolute_path), error.validator or ""),
+        )
+        issues = [
+            ContractIssue(
+                path="/" + "/".join(str(part) for part in error.absolute_path),
+                keyword=error.validator or "unknown",
+            )
+            for error in errors
+        ]
+        if not issues:
+            issues.extend(_result_semantic_issues(instance, scope_cidr))
+        if issues:
+            raise DiscoveryContractValidationError(tuple(issues))
+        return instance
+
+    @staticmethod
+    def _reject_remote_resource(uri: str) -> Resource[Any]:
+        raise NoSuchResource(ref=uri)
+
+
+def _closed_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object member")
+        result[key] = value
+    return result
+
+
+def _result_semantic_issues(instance: dict[str, Any], scope_cidr: str) -> list[ContractIssue]:
+    issues: list[ContractIssue] = []
+    try:
+        scope = ipaddress.ip_network(scope_cidr, strict=True)
+    except ValueError:
+        return [ContractIssue(path="/observations", keyword="scope")]
+    started = datetime.fromisoformat(instance["startedAt"].removesuffix("Z") + "+00:00")
+    completed = datetime.fromisoformat(instance["completedAt"].removesuffix("Z") + "+00:00")
+    if completed < started:
+        issues.append(ContractIssue(path="/completedAt", keyword="minimum"))
+
+    summary = instance["summary"]
+    observations = instance["observations"]
+    if summary["targetsConsidered"] != scope.num_addresses:
+        issues.append(ContractIssue(path="/summary/targetsConsidered", keyword="const"))
+    if summary["observationsFound"] != len(observations):
+        issues.append(ContractIssue(path="/summary/observationsFound", keyword="const"))
+    if summary["targetsScanned"] > summary["targetsConsidered"]:
+        issues.append(ContractIssue(path="/summary/targetsScanned", keyword="maximum"))
+    if len(observations) > summary["targetsScanned"]:
+        issues.append(ContractIssue(path="/observations", keyword="maxItems"))
+    if instance["status"] == "SUCCEEDED" and (
+        summary["targetsScanned"] != summary["targetsConsidered"]
+    ):
+        issues.append(ContractIssue(path="/summary/targetsScanned", keyword="const"))
+
+    observed: set[str] = set()
+    for index, observation in enumerate(observations):
+        address_value = observation["ipAddress"]
+        try:
+            address = ipaddress.ip_address(address_value)
+        except ValueError:
+            issues.append(ContractIssue(path=f"/observations/{index}/ipAddress", keyword="format"))
+            continue
+        if str(address) != address_value or address not in scope:
+            issues.append(ContractIssue(path=f"/observations/{index}/ipAddress", keyword="scope"))
+        if address_value in observed:
+            issues.append(ContractIssue(path=f"/observations/{index}/ipAddress", keyword="unique"))
+        observed.add(address_value)
+        if observation["openTcpPorts"] != sorted(observation["openTcpPorts"]):
+            issues.append(
+                ContractIssue(path=f"/observations/{index}/openTcpPorts", keyword="order")
+            )
+        if any(port not in {22, 53, 80, 443, 445, 3389} for port in observation["openTcpPorts"]):
+            issues.append(ContractIssue(path=f"/observations/{index}/openTcpPorts", keyword="enum"))
+        if bool(observation["openTcpPorts"]) != ("TCP" in observation["evidence"]):
+            issues.append(
+                ContractIssue(path=f"/observations/{index}/evidence", keyword="coherence")
+            )
+    return issues
