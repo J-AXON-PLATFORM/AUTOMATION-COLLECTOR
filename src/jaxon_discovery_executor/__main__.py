@@ -11,6 +11,7 @@ from jaxon_discovery_executor.identity import (
     ExecutorIdentityInitializationError,
     initialize_identity,
 )
+from jaxon_discovery_executor.runner import DiscoveryRunnerError, run_once
 from jaxon_discovery_executor.sftp import (
     ExecutorSftpConfigurationError,
     ExecutorSftpVerificationError,
@@ -45,6 +46,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "verify-sftp", help="Verify the pinned Discovery Executor SFTP connection"
     )
     verify.add_argument("--state-dir", required=True)
+    run = commands.add_parser("run-once", help="Handle at most one Discovery Job")
+    run.add_argument("--state-dir", required=True)
     parsed = parser.parse_args(arguments)
 
     try:
@@ -58,12 +61,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 parsed.username,
                 parsed.host_key,
             )
-        else:
+        elif parsed.command == "verify-sftp":
             result = verify_sftp(parsed.state_dir)
+        else:
+            result = run_once(parsed.state_dir)
     except (
         ExecutorIdentityInitializationError,
         ExecutorSftpConfigurationError,
         ExecutorSftpVerificationError,
+        DiscoveryRunnerError,
     ) as exception:
         print(str(exception), file=sys.stderr)
         return 2

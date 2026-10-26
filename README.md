@@ -22,7 +22,7 @@ uv python install 3.14.8
 uv sync --locked
 ```
 
-Las dependencias runtime `jsonschema` y `referencing` validan localmente los contratos Agent y Discovery Job. `cryptography` genera y valida el keypair Ed25519 y Paramiko 5.0.0 verifica la conexion SFTP con la host key fijada. Ruff, pytest y pip-audit son herramientas de desarrollo fijadas exactamente en `pyproject.toml` y bloqueadas en `uv.lock`.
+Las dependencias runtime `jsonschema` y `referencing` validan localmente los contratos Agent y Discovery Job/Result. `cryptography` genera y valida el keypair Ed25519 y Paramiko 5.0.0 verifica la conexion SFTP con la host key fijada. Ruff, pytest y pip-audit son herramientas de desarrollo fijadas exactamente en `pyproject.toml` y bloqueadas en `uv.lock`.
 
 ## Entry points
 
@@ -91,7 +91,18 @@ uv run jaxon-discovery-executor verify-sftp \
   --state-dir /ruta/privada/jaxon-discovery-executor
 ```
 
-La configuracion privada es idempotente y queda ligada al `executorId`. La verificacion realiza un unico intento con la private key local exacta y la host key Ed25519 fijada, sin SSH Agent ni busqueda de claves externas. No implementa polling, ejecucion de jobs, resultados, escaneo, retries o daemon.
+La configuracion privada es idempotente y queda ligada al `executorId`. La verificacion realiza un unico intento con la private key local exacta y la host key Ed25519 fijada, sin SSH Agent ni busqueda de claves externas.
+
+## Ejecucion puntual Discovery BASIC
+
+Un executor configurado puede recoger y procesar como máximo un Job final elegible:
+
+```bash
+uv run jaxon-discovery-executor run-once \
+  --state-dir /ruta/privada/jaxon-discovery-executor
+```
+
+El comando usa estado local privado y durable, no reejecuta un Job que alcanzó `RUNNING`, limita el CIDR a 4096 direcciones y prueba solo TCP `22,53,80,443,445,3389` con concurrencia 32 y timeout 2 s. ARP es pasivo; no realiza UDP, banners, autenticación, fingerprinting o explotación. Discovery Result 1.0 se valida offline y se conserva byte a byte hasta completar el rename atómico `/results/<jobId>.json.part -> <jobId>.json`. Cada invocación realiza como máximo una unidad de trabajo y no añade polling, retries automáticos o daemon.
 
 ## Snapshot tecnico puntual
 
@@ -129,9 +140,9 @@ uv run python scripts/sync_agent_contracts.py verify
 
 El validador `jaxon_agent.contracts` resuelve todos los `$ref` offline. Valida bytes y tamaño antes de parsear, acepta únicamente la versión `1.0` y separa mensajes emitidos por Agent de tareas recibidas. No registra el payload cuando informa un error.
 
-## Contrato Discovery Job
+## Contratos Discovery Job y Result
 
-`contracts/discovery/1.0/` es una copia byte a byte de `BACKEND/doc/contracts/discovery/1.0/`. `jaxon_discovery_executor.contracts.DiscoveryJobContractValidator` valida offline jobs `BASIC` cerrados, UUIDv4, CIDR canónico, UTC, expiración creciente y el límite de 64 KiB.
+`contracts/discovery/1.0/` es una copia byte a byte de `BACKEND/doc/contracts/discovery/1.0/`. `DiscoveryJobContractValidator` valida offline jobs `BASIC` cerrados, UUIDv4, CIDR canónico, UTC, expiración creciente y el límite de 64 KiB. `DiscoveryResultContractValidator` valida el resultado cerrado antes de emitirlo, incluido tamaño máximo de 5 MiB, correlación, tiempos, contadores, puertos ordenados, IP dentro del scope y máximo 4096 observaciones.
 
 ```bash
 uv run python scripts/sync_discovery_contracts.py sync --source ../backend/doc/contracts/discovery/1.0
@@ -143,4 +154,4 @@ uv run python scripts/sync_discovery_contracts.py verify
 
 El Agent incorpora inicializacion local Ed25519, verificacion puntual de conexion SFTP y un snapshot tecnico puntual. Todavia no implementa polling, retries, spool, tareas reales, procesamiento Collector, discovery de red, revocacion, rotacion, servicios del sistema operativo ni packaging con PyInstaller.
 
-El Discovery Executor incorpora identidad Ed25519 local, configuracion/verificacion puntual SFTP y validacion offline del contrato Discovery Job 1.0. Continua sin polling, ejecucion, resultados, escaneo, retries, daemon o packaging PyInstaller.
+El Discovery Executor incorpora identidad Ed25519 local, configuracion/verificacion SFTP, contratos Discovery Job/Result 1.0 y una ejecución `BASIC` puntual mediante `run-once`. Continua sin polling periódico, retries automáticos, daemon, ingestión backend, dispositivos, incorporación a Inventory o packaging PyInstaller.
